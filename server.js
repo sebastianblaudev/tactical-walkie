@@ -24,11 +24,11 @@ io.on('connection', (socket) => {
 
     socket.on('join-room', (roomId) => {
         socket.join(roomId);
-        
+
         if (!rooms[roomId]) {
             rooms[roomId] = [];
         }
-        
+
         // Notify others in the room to start handshake with the new user
         rooms[roomId].forEach(userId => {
             io.to(userId).emit('user-joined', socket.id);
@@ -36,7 +36,7 @@ io.on('connection', (socket) => {
 
         rooms[roomId].push(socket.id);
         console.log(`[SYS] User ${socket.id} joined mission: ${roomId}`);
-        
+
         // Return current users to the new user (so they know who else is there)
         socket.emit('room-users', rooms[roomId].filter(id => id !== socket.id));
     });
@@ -49,6 +49,14 @@ io.on('connection', (socket) => {
         });
     });
 
+    socket.on('ptt-status', (data) => {
+        // Broadcast to others in the room
+        socket.to(data.roomId).emit('peer-ptt', {
+            id: socket.id,
+            active: data.active
+        });
+    });
+
     socket.on('disconnect', () => {
         console.log(`[SYS] User disconnected: ${socket.id}`);
         for (const roomId in rooms) {
@@ -56,7 +64,7 @@ io.on('connection', (socket) => {
             if (index !== -1) {
                 rooms[roomId].splice(index, 1);
                 io.to(roomId).emit('user-left', socket.id);
-                
+
                 if (rooms[roomId].length === 0) {
                     delete rooms[roomId];
                 }

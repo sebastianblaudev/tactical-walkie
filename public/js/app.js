@@ -89,12 +89,19 @@ class TacticalComm {
     async initAudio() {
         try {
             this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            this.localStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                },
+                video: false
+            });
 
             // Source from mic
             const source = this.audioCtx.createMediaStreamSource(this.localStream);
 
-            // Main Gain for PTT
+            // Main Gain for PTT (This will control what is SENT to others)
             this.mainGain = this.audioCtx.createGain();
             this.mainGain.gain.setValueAtTime(0, this.audioCtx.currentTime);
 
@@ -102,20 +109,32 @@ class TacticalComm {
             this.analyser = this.audioCtx.createAnalyser();
             this.analyser.fftSize = 256;
 
-            // Connect mic -> gain -> analyser -> destination (we don't want to hear ourselves normally, 
-            // but we need to send this stream via WebRTC)
+            // MediaStream Destination (This is the "processed" stream we send via WebRTC)
+            this.processedDestination = this.audioCtx.createMediaStreamDestination();
+
+            // Graph: mic -> gain -> destination (to send)
+            //              \-> analyser (to see)
             source.connect(this.mainGain);
-            this.mainGain.connect(this.analyser);
+            this.mainGain.connect(this.processedDestination);
+            source.connect(this.analyser);
 
             this.log('Audio Engine Online', 'sys');
             this.startVisualizer();
 
             // Unlock AudioContext for mobile/safari
-            if (this.audioCtx.state === 'suspended') {
-                await this.audioCtx.resume();
-            }
+            const unlock = async () => {
+                if (this.audioCtx.state === 'suspended') {
+                    await this.audioCtx.resume();
+                }
+                window.removeEventListener('click', unlock);
+                window.removeEventListener('touchstart', unlock);
+            };
+            window.addEventListener('click', unlock);
+            window.addEventListener('touchstart', unlock);
+
         } catch (err) {
             this.log(`Audio Init Error: ${err.message}`, 'err');
+            alert("Error de Audio: Por favor permite el acceso al micrófono.");
         }
     }
 
@@ -124,21 +143,30 @@ class TacticalComm {
 
         const now = this.audioCtx.currentTime;
         if (active) {
-            this.mainGain.gain.setTargetAtTime(1.0, now, 0.02); // Smooth ramp to avoid pops
+            this.mainGain.gain.setTargetAtTime(1.0, now, 0.01);
             this.pttBtn.classList.add('active');
             this.log('TRANSMITTING...', 'net');
+            // Visual feedback on peer list
+            this.socket.emit('ptt-status', { roomId: this.missionId, active: true });
         } else {
-            this.mainGain.gain.setTargetAtTime(0.0, now, 0.02);
+            this.mainGain.gain.setTargetAtTime(0.0, now, 0.01);
             this.pttBtn.classList.remove('active');
             this.log('RECEIVING/IDLE', 'sys');
+            this.socket.emit('ptt-status', { roomId: this.missionId, active: false });
         }
     }
 
     async startSession() {
-        this.missionId = this.missionInput.value.trim().toUpperCase() || 'DEFAULT';
-        this.operatorName = this.nameInput.value.trim() || 'OPERATOR';
+        const mission = this.missionInput.value.trim().toUpperCase();
+        const name = this.nameInput.value.trim();
 
-        if (!this.missionId) return;
+        if (!mission || !name) {
+            alert("Completa los datos de acceso.");
+            return;
+        }
+
+        this.missionId = mission;
+        this.operatorName = name;
 
         await this.initAudio();
         this.initSocket();
@@ -179,19 +207,27 @@ class TacticalComm {
 
             const pc = this.peers[from];
 
-            if (signal.sdp) {
-                await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-                if (signal.sdp.type === 'offer') {
-                    const answer = await pc.createAnswer();
-                    await pc.setLocalDescription(answer);
-                    this.socket.emit('signal', { to: from, signal: { sdp: pc.localDescription } });
-                }
-            } else if (signal.candidate) {
-                try {
+            try {
+                if (signal.sdp) {
+                    await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+                    if (signal.sdp.type === 'offer') {
+                        const answer = await pc.createAnswer();
+                        await pc.setLocalDescription(answer);
+                        this.socket.emit('signal', { to: from, signal: { sdp: pc.localDescription } });
+                    }
+                } else if (signal.candidate) {
                     await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-                } catch (e) {
-                    console.error('Error adding ice candidate', e);
                 }
+            } catch (err) {
+                console.error("Signal Handling Error:", err);
+            }
+        });
+
+        this.socket.on('peer-ptt', (data) => {
+            const el = document.getElementById(`peer-${data.id}`);
+            if (el) {
+                if (data.active) el.classList.add('active');
+                else el.classList.remove('active');
             }
         });
 
@@ -200,6 +236,9 @@ class TacticalComm {
             if (this.peers[userId]) {
                 this.peers[userId].close();
                 delete this.peers[userId];
+                // Remove associated audio element
+                const audioEl = document.getElementById(`audio-${userId}`);
+                if (audioEl) audioEl.remove();
                 this.updatePeerUI();
             }
         });
@@ -211,9 +250,9 @@ class TacticalComm {
         const pc = new RTCPeerConnection({ iceServers: this.iceServers });
         this.peers[userId] = pc;
 
-        // Add local stream
-        this.localStream.getTracks().forEach(track => {
-            pc.addTrack(track, this.localStream);
+        // CRITICAL: We add tracks from our PROCESSED stream (affected by PTT gain)
+        this.processedDestination.stream.getTracks().forEach(track => {
+            pc.addTrack(track, this.processedDestination.stream);
         });
 
         pc.onicecandidate = (event) => {
@@ -223,16 +262,16 @@ class TacticalComm {
         };
 
         pc.ontrack = (event) => {
-            this.log(`Audio stream received from ${userId}`, 'net');
+            this.log(`Stream incoming from ${userId}`, 'net');
             this.playRemoteStream(event.streams[0], userId);
         };
 
         pc.onconnectionstatechange = () => {
-            this.log(`Peer ${userId} state: ${pc.connectionState}`, 'sys');
+            this.log(`Link state (${userId}): ${pc.connectionState}`, 'sys');
             if (pc.connectionState === 'failed') {
-                this.log(`Reconnecting to ${userId}...`, 'err');
-                pc.close();
+                this.peers[userId].close();
                 delete this.peers[userId];
+                // Re-initiate connection if failed
                 this.initWebRTC(userId, true);
             }
         };
@@ -253,10 +292,20 @@ class TacticalComm {
     }
 
     playRemoteStream(stream, userId) {
-        // AUDIO BYPASS: Direct to AudioContext instead of <audio> tag for better reliability
-        const remoteSource = this.audioCtx.createMediaStreamSource(stream);
+        // MOBILE FIX: Create a hidden audio element to satisfy iOS autoplay/active-session policies
+        let audioEl = document.getElementById(`audio-${userId}`);
+        if (!audioEl) {
+            audioEl = document.createElement('audio');
+            audioEl.id = `audio-${userId}`;
+            audioEl.style.display = 'none';
+            document.body.appendChild(audioEl);
+        }
 
-        // We can add an analyzer for this specific peer too if we want
+        audioEl.srcObject = stream;
+        audioEl.play().catch(e => console.log("Autoplay blocked, waiting for interaction", e));
+
+        // Connect to AudioContext for high-fidelity routing
+        const remoteSource = this.audioCtx.createMediaStreamSource(stream);
         remoteSource.connect(this.audioCtx.destination);
     }
 
@@ -265,6 +314,7 @@ class TacticalComm {
         Object.keys(this.peers).forEach(id => {
             const div = document.createElement('div');
             div.className = 'operator-item';
+            div.id = `peer-${id}`;
             div.innerHTML = `
                 <div class="op-avatar">OP</div>
                 <div class="op-info">
