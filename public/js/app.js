@@ -81,39 +81,38 @@ class TacticalComm {
 
     async initAudio() {
         try {
-            this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            this.log(`AudioCtx: ${this.audioCtx.state}`);
+            this.audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+                latencyHint: 'interactive'
+            });
 
             this.localStream = await navigator.mediaDevices.getUserMedia({
-                audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true },
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                },
                 video: false
             });
 
             const source = this.audioCtx.createMediaStreamSource(this.localStream);
             this.analyser = this.audioCtx.createAnalyser();
-            this.analyser.fftSize = 256;
+            this.analyser.fftSize = 128;
             source.connect(this.analyser);
 
-            // Gain node for PTT
             this.mainGain = this.audioCtx.createGain();
             this.mainGain.gain.value = 0;
             source.connect(this.mainGain);
 
-            // IMPORTANT: For now, we also connect directly to a MediaStreamDestination 
-            // BUT we'll send the raw localStream for testing if negotiation persists in failing
             this.processedDestination = this.audioCtx.createMediaStreamDestination();
             this.mainGain.connect(this.processedDestination);
 
-            this.log('Audio Engine Online', 'sys');
+            this.log('Tactical Audio: ONLINE', 'sys');
             this.startVisualizer();
 
             const unlock = async () => {
                 if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
-                window.removeEventListener('click', unlock);
-                window.removeEventListener('touchstart', unlock);
             };
-            window.addEventListener('click', unlock);
-            window.addEventListener('touchstart', unlock);
+            ['click', 'touchstart'].forEach(e => window.addEventListener(e, unlock, { once: true }));
 
         } catch (err) {
             this.log(`Audio Init Error: ${err.message}`, 'err');
@@ -289,7 +288,7 @@ class TacticalComm {
         const canvas = document.getElementById('waves');
         const ctx = canvas.getContext('2d');
         const bufferLength = this.analyser.frequencyBinCount;
-        const dataArray = new Uint8ClampedArray(bufferLength);
+        const dataArray = new Uint8Array(bufferLength);
         const draw = () => {
             requestAnimationFrame(draw);
             this.analyser.getByteFrequencyData(dataArray);
