@@ -156,34 +156,50 @@ class TacticalComm {
             this.statusText.textContent = 'ONLINE';
             this.socket.emit('join-room', this.missionId);
         });
+
         this.socket.on('user-joined', (userId) => this.log(`Peer entered: ${userId}`));
         this.socket.on('room-users', (users) => {
             users.forEach(userId => this.initWebRTC(userId, true));
         });
+
         this.socket.on('signal', async (data) => {
             const { from, signal } = data;
             if (!this.peers[from]) this.initWebRTC(from, false);
-            const pc = this.peers[from];
+            const peer = this.peers[from];
+
             try {
                 if (signal.sdp) {
-                    await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+                    await peer.pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
                     if (signal.sdp.type === 'offer') {
-                        const answer = await pc.createAnswer();
-                        await pc.setLocalDescription(answer);
-                        this.socket.emit('signal', { to: from, signal: { sdp: pc.localDescription } });
+                        const answer = await peer.pc.createAnswer();
+                        await peer.pc.setLocalDescription(answer);
+                        this.socket.emit('signal', { to: from, signal: { sdp: peer.pc.localDescription } });
                     }
+                    // Process queued candidates
+                    peer.candidates.forEach(async (cand) => {
+                        await peer.pc.addIceCandidate(new RTCIceCandidate(cand)).catch(e => { });
+                    });
+                    peer.candidates = [];
                 } else if (signal.candidate) {
-                    await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+                    if (peer.pc.remoteDescription) {
+                        await peer.pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+                    } else {
+                        peer.candidates.push(signal.candidate);
+                    }
                 }
-            } catch (err) { console.error(err); }
+            } catch (err) {
+                console.error("Signaling Error:", err);
+            }
         });
+
         this.socket.on('peer-ptt', (data) => {
             const el = document.getElementById(`peer-${data.id}`);
             if (el) data.active ? el.classList.add('active') : el.classList.remove('active');
         });
+
         this.socket.on('user-left', (userId) => {
             if (this.peers[userId]) {
-                this.peers[userId].close();
+                this.peers[userId].pc.close();
                 delete this.peers[userId];
                 document.getElementById(`audio-${userId}`)?.remove();
                 this.updatePeerUI();
@@ -193,10 +209,16 @@ class TacticalComm {
 
     initWebRTC(userId, isOfferer) {
         if (this.peers[userId]) return;
-        const pc = new RTCPeerConnection({ iceServers: this.iceServers, iceCandidatePoolSize: 10 });
-        this.peers[userId] = pc;
 
-        // CRITICAL: Use processed destination to respect PTT gain
+        const pc = new RTCPeerConnection({
+            iceServers: this.iceServers,
+            iceCandidatePoolSize: 10,
+            iceTransportPolicy: 'all'
+        });
+
+        // Store both PC and original candidate queue
+        this.peers[userId] = { pc, candidates: [] };
+
         this.processedDestination.stream.getTracks().forEach(track => {
             pc.addTrack(track, this.processedDestination.stream);
         });
@@ -204,13 +226,18 @@ class TacticalComm {
         pc.onicecandidate = (e) => {
             if (e.candidate) this.socket.emit('signal', { to: userId, signal: { candidate: e.candidate } });
         };
+
         pc.ontrack = (e) => {
-            this.log(`Track from ${userId}`, 'net');
+            this.log(`Track received from ${userId}`, 'net');
             this.playRemoteStream(e.streams[0], userId);
         };
+
         pc.oniceconnectionstatechange = () => {
-            this.log(`ICE ${userId}: ${pc.iceConnectionState}`);
-            if (pc.iceConnectionState === 'failed') pc.restartIce();
+            this.log(`ICE ${userId.substring(0, 4)}: ${pc.iceConnectionState}`);
+            if (pc.iceConnectionState === 'failed') {
+                this.log("Restarting connection...");
+                pc.restartIce();
+            }
         };
 
         if (isOfferer) {
