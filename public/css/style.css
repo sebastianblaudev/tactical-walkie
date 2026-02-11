@@ -1,0 +1,324 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@300;500;700&display=swap');
+
+:root {
+    --bg-dark: #131314;
+    --bg-panel: #1a1a1c;
+    --accent-neon: #6EE7B7;
+    --accent-blue: #3B82F6;
+    --text-main: #e2e8f0;
+    --text-dim: #94a3b8;
+    --danger: #ef4444;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    background-color: var(--bg-dark);
+    color: var(--text-main);
+    font-family: 'Rajdhani', sans-serif;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* --- Login Screen --- */
+#login-screen {
+    position: fixed;
+    inset: 0;
+    background: var(--bg-dark);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    flex-direction: column;
+    padding: 20px;
+}
+
+.login-box {
+    background: var(--bg-panel);
+    padding: 40px;
+    border: 2px solid var(--accent-blue);
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.2);
+    width: 100%;
+    max-width: 400px;
+    text-align: center;
+}
+
+.login-box h1 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.5rem;
+    margin-bottom: 2rem;
+    letter-spacing: 2px;
+    color: var(--accent-blue);
+}
+
+.input-group {
+    margin-bottom: 1.5rem;
+    text-align: left;
+}
+
+.input-group label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+}
+
+input[type="text"] {
+    width: 100%;
+    background: #000;
+    border: 1px solid #333;
+    padding: 12px;
+    color: var(--accent-neon);
+    font-family: monospace;
+    font-size: 1.2rem;
+    outline: none;
+    transition: border-color 0.3s;
+}
+
+input[type="text"]:focus {
+    border-color: var(--accent-blue);
+}
+
+.btn-primary {
+    width: 100%;
+    padding: 15px;
+    background: var(--accent-blue);
+    color: white;
+    border: none;
+    font-family: 'Orbitron', sans-serif;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background 0.3s;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.btn-primary:hover {
+    background: #2563eb;
+}
+
+/* --- Main App --- */
+header {
+    padding: 1rem 2rem;
+    border-bottom: 1px solid #333;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--bg-panel);
+}
+
+.status-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.9rem;
+    color: var(--text-dim);
+}
+
+#status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--danger);
+    box-shadow: 0 0 5px var(--danger);
+}
+
+#status-dot.online {
+    background: var(--accent-neon);
+    box-shadow: 0 0 5px var(--accent-neon);
+}
+
+.mission-id {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--accent-blue);
+}
+
+main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 350px;
+    gap: 1px;
+    background: #333;
+}
+
+.ptt-container {
+    background: var(--bg-dark);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    padding: 2rem;
+}
+
+.visualizer-container {
+    width: 100%;
+    max-width: 800px;
+    height: 200px;
+    background: rgba(0,0,0,0.5);
+    margin-bottom: 3rem;
+    border: 1px solid #222;
+    position: relative;
+}
+
+canvas {
+    width: 100%;
+    height: 100%;
+}
+
+.ptt-button-outer {
+    width: 200px;
+    height: 200px;
+    border-radius: 50%;
+    background: #222;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 4px solid #333;
+    cursor: pointer;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 0.1s, border-color 0.2s;
+}
+
+.ptt-button-outer:active, .ptt-button-outer.active {
+    transform: scale(0.95);
+    border-color: var(--accent-neon);
+    box-shadow: 0 0 30px rgba(110, 231, 183, 0.2);
+}
+
+.ptt-button-inner {
+    width: 160px;
+    height: 160px;
+    border-radius: 50%;
+    background: #1a1a1c;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+}
+
+.ptt-button-inner i {
+    font-size: 3rem;
+    color: #444;
+    transition: color 0.2s;
+}
+
+.ptt-button-outer.active .ptt-button-inner i {
+    color: var(--accent-neon);
+}
+
+.ptt-label {
+    margin-top: 10px;
+    font-size: 0.8rem;
+    font-family: 'Orbitron', sans-serif;
+    color: #444;
+    text-transform: uppercase;
+}
+
+.ptt-button-outer.active .ptt-label {
+    color: var(--accent-neon);
+}
+
+/* --- Sidebar --- */
+aside {
+    background: var(--bg-panel);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.operators-list {
+    flex: 1;
+    padding: 1rem;
+    overflow-y: auto;
+}
+
+.section-title {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 1rem;
+    letter-spacing: 1px;
+    border-bottom: 1px solid #333;
+    padding-bottom: 5px;
+}
+
+.operator-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    background: rgba(0,0,0,0.2);
+    margin-bottom: 5px;
+    border: 1px solid transparent;
+}
+
+.operator-item.active {
+    border-color: var(--accent-neon);
+}
+
+.op-avatar {
+    width: 32px;
+    height: 32px;
+    background: var(--accent-blue);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 0.8rem;
+}
+
+.op-info {
+    flex: 1;
+}
+
+.op-name {
+    font-size: 0.9rem;
+    font-family: monospace;
+}
+
+.op-status {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+}
+
+/* --- Debug Log --- */
+.debug-log {
+    height: 200px;
+    background: #000;
+    border-top: 2px solid #333;
+    padding: 10px;
+    font-family: monospace;
+    font-size: 0.75rem;
+    overflow-y: auto;
+    color: #0f0;
+}
+
+.log-entry {
+    margin-bottom: 4px;
+    opacity: 0.8;
+}
+
+.log-entry.sys { color: var(--accent-blue); }
+.log-entry.err { color: var(--danger); }
+.log-entry.net { color: var(--accent-neon); }
+
+@media (max-width: 768px) {
+    main {
+        grid-template-columns: 1fr;
+    }
+    aside {
+        display: none;
+    }
+}
