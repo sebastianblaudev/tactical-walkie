@@ -113,10 +113,17 @@ class TacticalComm {
             this.processedDestination = this.audioCtx.createMediaStreamDestination();
 
             // Graph: mic -> gain -> destination (to send)
-            //              \-> analyser (to see)
+            //              \-> analyser (to see our own voice)
             source.connect(this.mainGain);
             this.mainGain.connect(this.processedDestination);
             source.connect(this.analyser);
+
+            // Connect AudioContext to speakers (destination) to ensure it stays active
+            // but we don't connect 'source' directly to destination (that would be echo)
+            const silent = this.audioCtx.createGain();
+            silent.gain.value = 0;
+            source.connect(silent);
+            silent.connect(this.audioCtx.destination);
 
             this.log('Audio Engine Online', 'sys');
             this.startVisualizer();
@@ -294,14 +301,13 @@ class TacticalComm {
 
     playRemoteStream(stream, userId) {
         // MOBILE FIX: Use an visible (but tiny) audio element with controls=false 
-        // Some mobile browsers throttle or mute audio elements that are display:none
         let audioEl = document.getElementById(`audio-${userId}`);
         if (!audioEl) {
             audioEl = document.createElement('audio');
             audioEl.id = `audio-${userId}`;
             audioEl.autoplay = true;
-            audioEl.playsInline = true; // Critical for iOS
-            // Minimal styling to keep it "hidden" but active
+            audioEl.playsInline = true;
+            audioEl.muted = false; // Ensure it's NOT muted
             audioEl.style.position = 'absolute';
             audioEl.style.width = '1px';
             audioEl.style.height = '1px';
@@ -311,24 +317,33 @@ class TacticalComm {
 
         audioEl.srcObject = stream;
 
-        // Final attempt to hear via AudioContext (High Fidelity)
-        const play = () => {
-            audioEl.play().catch(e => {
-                this.log("Autoplay blocked. Tap anywhere to hear.", "err");
-            });
-
-            // Connect to AudioContext destination for better sound
+        const play = async () => {
             try {
+                if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
+                await audioEl.play();
+
+                // Connect to AudioContext destination for better sound
                 const remoteSource = this.audioCtx.createMediaStreamSource(stream);
+
+                // ALSO connect remote source to our main analyser so we see their waves!
+                remoteSource.connect(this.analyser);
                 remoteSource.connect(this.audioCtx.destination);
-            } catch (e) { console.error("AudioCtx routing failed:", e); }
+
+                this.log(`Incoming audio linked for ${userId}`, 'net');
+            } catch (e) {
+                this.log("Audio block detected. Tap to enable.", "err");
+            }
         };
 
         play();
 
-        // Re-attempt play on user interaction to clear any final blocks
-        window.addEventListener('click', () => audioEl.play(), { once: true });
-        window.addEventListener('touchstart', () => audioEl.play(), { once: true });
+        // Final fallback on interaction
+        ['click', 'touchstart', 'keydown'].forEach(evt => {
+            window.addEventListener(evt, () => {
+                if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+                audioEl.play();
+            }, { once: true });
+        });
     }
 
     updatePeerUI() {
@@ -368,9 +383,17 @@ class TacticalComm {
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
             ctx.lineWidth = 2;
-            ctx.strokeStyle = this.pttBtn.classList.contains('active') ? '#6EE7B7' : '#3B82F6';
 
-            ctx.beginPath();
+            // Determine color: Green if someone (me or them) is transmitting
+            let someoneTalking = this.pttBtn.classList.contains('active');
+            if (!someoneTalking) {
+                const activePeers = document.querySelectorAll('.operator-item.active');
+                if (activePeers.length > 0) someoneTalking = true;
+            }
+
+            ctx.strokeStyle = someoneTalking ? '#6EE7B7' : '#3B82F6';
+            ctx.shadowBlur = someoneTalking ? 15 : 0;
+            ctx.shadowColor = ctx.strokeStyle;
             const sliceWidth = canvas.width * 1.0 / bufferLength;
             let x = 0;
 
