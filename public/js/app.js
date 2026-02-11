@@ -188,13 +188,14 @@ class TacticalComm {
 
         this.socket.on('user-joined', (userId) => {
             this.log(`New peer detected: ${userId}`, 'sys');
-            this.initWebRTC(userId, true); // We are the offerer
+            // We DON'T initiate here. We wait for the new user to send us an offer.
+            // This prevents double-handshakes.
         });
 
         this.socket.on('room-users', (users) => {
             users.forEach(userId => {
-                this.log(`Existing peer found: ${userId}`, 'sys');
-                this.initWebRTC(userId, true);
+                this.log(`Establishing link with: ${userId}`, 'sys');
+                this.initWebRTC(userId, true); // We are the newcomer, we initiate
             });
         });
 
@@ -292,21 +293,42 @@ class TacticalComm {
     }
 
     playRemoteStream(stream, userId) {
-        // MOBILE FIX: Create a hidden audio element to satisfy iOS autoplay/active-session policies
+        // MOBILE FIX: Use an visible (but tiny) audio element with controls=false 
+        // Some mobile browsers throttle or mute audio elements that are display:none
         let audioEl = document.getElementById(`audio-${userId}`);
         if (!audioEl) {
             audioEl = document.createElement('audio');
             audioEl.id = `audio-${userId}`;
-            audioEl.style.display = 'none';
+            audioEl.autoplay = true;
+            audioEl.playsInline = true; // Critical for iOS
+            // Minimal styling to keep it "hidden" but active
+            audioEl.style.position = 'absolute';
+            audioEl.style.width = '1px';
+            audioEl.style.height = '1px';
+            audioEl.style.opacity = '0.01';
             document.body.appendChild(audioEl);
         }
 
         audioEl.srcObject = stream;
-        audioEl.play().catch(e => console.log("Autoplay blocked, waiting for interaction", e));
 
-        // Connect to AudioContext for high-fidelity routing
-        const remoteSource = this.audioCtx.createMediaStreamSource(stream);
-        remoteSource.connect(this.audioCtx.destination);
+        // Final attempt to hear via AudioContext (High Fidelity)
+        const play = () => {
+            audioEl.play().catch(e => {
+                this.log("Autoplay blocked. Tap anywhere to hear.", "err");
+            });
+
+            // Connect to AudioContext destination for better sound
+            try {
+                const remoteSource = this.audioCtx.createMediaStreamSource(stream);
+                remoteSource.connect(this.audioCtx.destination);
+            } catch (e) { console.error("AudioCtx routing failed:", e); }
+        };
+
+        play();
+
+        // Re-attempt play on user interaction to clear any final blocks
+        window.addEventListener('click', () => audioEl.play(), { once: true });
+        window.addEventListener('touchstart', () => audioEl.play(), { once: true });
     }
 
     updatePeerUI() {
