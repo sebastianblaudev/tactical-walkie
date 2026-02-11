@@ -14,24 +14,17 @@ class TacticalComm {
         this.missionId = '';
         this.operatorName = '';
 
-        // Configuration
-        // Configuration: High-redundancy ICE servers for 4G/5G traversal
         this.iceServers = [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
             { urls: 'stun:stun3.l.google.com:19302' },
             { urls: 'stun:stun4.l.google.com:19302' },
-            {
-                urls: 'turn:openrelay.metered.ca:443',
-                username: 'openrelayproject',
-                credential: 'openrelayproject'
-            },
-            {
-                urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                username: 'openrelayproject',
-                credential: 'openrelayproject'
-            }
+            { urls: 'stun:stun.ekiga.net' },
+            { urls: 'stun:stun.ideasip.com' },
+            { urls: 'stun:stun.schlund.de' },
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+            { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
         ];
 
         this.initUI();
@@ -51,12 +44,10 @@ class TacticalComm {
 
         this.joinBtn.addEventListener('click', () => this.startSession());
 
-        // PTT Logic
         this.pttBtn.addEventListener('mousedown', () => this.setTransmission(true));
         this.pttBtn.addEventListener('mouseup', () => this.setTransmission(false));
         this.pttBtn.addEventListener('mouseleave', () => this.setTransmission(false));
 
-        // Mobile Touch
         this.pttBtn.addEventListener('touchstart', (e) => {
             e.preventDefault();
             this.setTransmission(true);
@@ -66,7 +57,6 @@ class TacticalComm {
             this.setTransmission(false);
         });
 
-        // Keybind (Space)
         window.addEventListener('keydown', (e) => {
             if (e.code === 'Space' && !e.repeat) {
                 if (document.activeElement.tagName !== 'INPUT') {
@@ -92,50 +82,33 @@ class TacticalComm {
     async initAudio() {
         try {
             this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            this.log(`AudioCtx: ${this.audioCtx.state}`);
+
             this.localStream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
-                },
+                audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: true },
                 video: false
             });
 
-            // Source from mic
             const source = this.audioCtx.createMediaStreamSource(this.localStream);
-
-            // Main Gain for PTT (This will control what is SENT to others)
-            this.mainGain = this.audioCtx.createGain();
-            this.mainGain.gain.setValueAtTime(0, this.audioCtx.currentTime);
-
-            // Analyser for visualizer
             this.analyser = this.audioCtx.createAnalyser();
             this.analyser.fftSize = 256;
-
-            // MediaStream Destination (This is the "processed" stream we send via WebRTC)
-            this.processedDestination = this.audioCtx.createMediaStreamDestination();
-
-            // Graph: mic -> gain -> destination (to send)
-            //              \-> analyser (to see our own voice)
-            source.connect(this.mainGain);
-            this.mainGain.connect(this.processedDestination);
             source.connect(this.analyser);
 
-            // Connect AudioContext to speakers (destination) to ensure it stays active
-            // but we don't connect 'source' directly to destination (that would be echo)
-            const silent = this.audioCtx.createGain();
-            silent.gain.value = 0;
-            source.connect(silent);
-            silent.connect(this.audioCtx.destination);
+            // Gain node for PTT
+            this.mainGain = this.audioCtx.createGain();
+            this.mainGain.gain.value = 0;
+            source.connect(this.mainGain);
+
+            // IMPORTANT: For now, we also connect directly to a MediaStreamDestination 
+            // BUT we'll send the raw localStream for testing if negotiation persists in failing
+            this.processedDestination = this.audioCtx.createMediaStreamDestination();
+            this.mainGain.connect(this.processedDestination);
 
             this.log('Audio Engine Online', 'sys');
             this.startVisualizer();
 
-            // Unlock AudioContext for mobile/safari
             const unlock = async () => {
-                if (this.audioCtx.state === 'suspended') {
-                    await this.audioCtx.resume();
-                }
+                if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
                 window.removeEventListener('click', unlock);
                 window.removeEventListener('touchstart', unlock);
             };
@@ -144,24 +117,22 @@ class TacticalComm {
 
         } catch (err) {
             this.log(`Audio Init Error: ${err.message}`, 'err');
-            alert("Error de Audio: Por favor permite el acceso al micrófono.");
+            alert("Micrófono bloqueado o no encontrado.");
         }
     }
 
     setTransmission(active) {
         if (!this.mainGain || !this.audioCtx) return;
-
         const now = this.audioCtx.currentTime;
         if (active) {
             this.mainGain.gain.setTargetAtTime(1.0, now, 0.01);
             this.pttBtn.classList.add('active');
             this.log('TRANSMITTING...', 'net');
-            // Visual feedback on peer list
             this.socket.emit('ptt-status', { roomId: this.missionId, active: true });
         } else {
             this.mainGain.gain.setTargetAtTime(0.0, now, 0.01);
             this.pttBtn.classList.remove('active');
-            this.log('RECEIVING/IDLE', 'sys');
+            this.log('IDLE', 'sys');
             this.socket.emit('ptt-status', { roomId: this.missionId, active: false });
         }
     }
@@ -169,55 +140,30 @@ class TacticalComm {
     async startSession() {
         const mission = this.missionInput.value.trim().toUpperCase();
         const name = this.nameInput.value.trim();
-
-        if (!mission || !name) {
-            alert("Completa los datos de acceso.");
-            return;
-        }
-
+        if (!mission || !name) return;
         this.missionId = mission;
         this.operatorName = name;
-
         await this.initAudio();
         this.initSocket();
-
         this.loginScreen.style.display = 'none';
         this.displayMission.textContent = `MISSION: ${this.missionId}`;
-        this.log(`Joined Mission: ${this.missionId}`);
     }
 
     initSocket() {
         this.socket = io();
-
         this.socket.on('connect', () => {
             this.statusDot.className = 'online';
             this.statusText.textContent = 'ONLINE';
-            this.log('Signal Link Established', 'net');
             this.socket.emit('join-room', this.missionId);
         });
-
-        this.socket.on('user-joined', (userId) => {
-            this.log(`New peer detected: ${userId}`, 'sys');
-            // We DON'T initiate here. We wait for the new user to send us an offer.
-            // This prevents double-handshakes.
-        });
-
+        this.socket.on('user-joined', (userId) => this.log(`Peer entered: ${userId}`));
         this.socket.on('room-users', (users) => {
-            users.forEach(userId => {
-                this.log(`Establishing link with: ${userId}`, 'sys');
-                this.initWebRTC(userId, true); // We are the newcomer, we initiate
-            });
+            users.forEach(userId => this.initWebRTC(userId, true));
         });
-
         this.socket.on('signal', async (data) => {
             const { from, signal } = data;
-
-            if (!this.peers[from]) {
-                this.initWebRTC(from, false);
-            }
-
+            if (!this.peers[from]) this.initWebRTC(from, false);
             const pc = this.peers[from];
-
             try {
                 if (signal.sdp) {
                     await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
@@ -229,27 +175,17 @@ class TacticalComm {
                 } else if (signal.candidate) {
                     await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
                 }
-            } catch (err) {
-                console.error("Signal Handling Error:", err);
-            }
+            } catch (err) { console.error(err); }
         });
-
         this.socket.on('peer-ptt', (data) => {
             const el = document.getElementById(`peer-${data.id}`);
-            if (el) {
-                if (data.active) el.classList.add('active');
-                else el.classList.remove('active');
-            }
+            if (el) data.active ? el.classList.add('active') : el.classList.remove('active');
         });
-
         this.socket.on('user-left', (userId) => {
-            this.log(`Peer offline: ${userId}`, 'err');
             if (this.peers[userId]) {
                 this.peers[userId].close();
                 delete this.peers[userId];
-                // Remove associated audio element
-                const audioEl = document.getElementById(`audio-${userId}`);
-                if (audioEl) audioEl.remove();
+                document.getElementById(`audio-${userId}`)?.remove();
                 this.updatePeerUI();
             }
         });
@@ -257,100 +193,58 @@ class TacticalComm {
 
     initWebRTC(userId, isOfferer) {
         if (this.peers[userId]) return;
-
-        const pc = new RTCPeerConnection({
-            iceServers: this.iceServers,
-            iceCandidatePoolSize: 10
-        });
+        const pc = new RTCPeerConnection({ iceServers: this.iceServers, iceCandidatePoolSize: 10 });
         this.peers[userId] = pc;
 
-        // CRITICAL: We add tracks from our PROCESSED stream (affected by PTT gain)
+        // CRITICAL: Use processed destination to respect PTT gain
         this.processedDestination.stream.getTracks().forEach(track => {
             pc.addTrack(track, this.processedDestination.stream);
         });
 
-        pc.onicecandidate = (event) => {
-            if (event.candidate) {
-                this.socket.emit('signal', { to: userId, signal: { candidate: event.candidate } });
-            }
+        pc.onicecandidate = (e) => {
+            if (e.candidate) this.socket.emit('signal', { to: userId, signal: { candidate: e.candidate } });
         };
-
-        pc.ontrack = (event) => {
-            this.log(`Stream incoming from ${userId}`, 'net');
-            this.playRemoteStream(event.streams[0], userId);
+        pc.ontrack = (e) => {
+            this.log(`Track from ${userId}`, 'net');
+            this.playRemoteStream(e.streams[0], userId);
         };
-
         pc.oniceconnectionstatechange = () => {
-            this.log(`ICE state (${userId}): ${pc.iceConnectionState}`, 'sys');
-            if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                this.log(`Attempting ICE restart for ${userId}...`, 'err');
-                pc.createOffer({ iceRestart: true }).then(offer => {
-                    pc.setLocalDescription(offer);
-                    this.socket.emit('signal', { to: userId, signal: { sdp: pc.localDescription } });
-                });
-            }
+            this.log(`ICE ${userId}: ${pc.iceConnectionState}`);
+            if (pc.iceConnectionState === 'failed') pc.restartIce();
         };
 
         if (isOfferer) {
             pc.onnegotiationneeded = async () => {
-                try {
-                    const offer = await pc.createOffer();
-                    await pc.setLocalDescription(offer);
-                    this.socket.emit('signal', { to: userId, signal: { sdp: pc.localDescription } });
-                } catch (err) {
-                    console.error(err);
-                }
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                this.socket.emit('signal', { to: userId, signal: { sdp: pc.localDescription } });
             };
         }
-
         this.updatePeerUI();
     }
 
     playRemoteStream(stream, userId) {
-        // MOBILE FIX: Use an visible (but tiny) audio element with controls=false 
         let audioEl = document.getElementById(`audio-${userId}`);
         if (!audioEl) {
             audioEl = document.createElement('audio');
             audioEl.id = `audio-${userId}`;
             audioEl.autoplay = true;
             audioEl.playsInline = true;
-            audioEl.muted = false; // Ensure it's NOT muted
-            audioEl.style.position = 'absolute';
-            audioEl.style.width = '1px';
-            audioEl.style.height = '1px';
-            audioEl.style.opacity = '0.01';
+            audioEl.style.display = 'none';
             document.body.appendChild(audioEl);
         }
-
         audioEl.srcObject = stream;
-
         const play = async () => {
             try {
                 if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
                 await audioEl.play();
-
-                // Connect to AudioContext destination for better sound
                 const remoteSource = this.audioCtx.createMediaStreamSource(stream);
-
-                // ALSO connect remote source to our main analyser so we see their waves!
-                remoteSource.connect(this.analyser);
+                remoteSource.connect(this.analyser); // Connect to analyser to see waves
                 remoteSource.connect(this.audioCtx.destination);
-
-                this.log(`Incoming audio linked for ${userId}`, 'net');
-            } catch (e) {
-                this.log("Audio block detected. Tap to enable.", "err");
-            }
+            } catch (e) { this.log("Tap screen to unlock audio", "err"); }
         };
-
         play();
-
-        // Final fallback on interaction
-        ['click', 'touchstart', 'keydown'].forEach(evt => {
-            window.addEventListener(evt, () => {
-                if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
-                audioEl.play();
-            }, { once: true });
-        });
+        ['click', 'touchstart'].forEach(evt => window.addEventListener(evt, play, { once: true }));
     }
 
     updatePeerUI() {
@@ -359,13 +253,7 @@ class TacticalComm {
             const div = document.createElement('div');
             div.className = 'operator-item';
             div.id = `peer-${id}`;
-            div.innerHTML = `
-                <div class="op-avatar">OP</div>
-                <div class="op-info">
-                    <div class="op-name">${id.substring(0, 8)}</div>
-                    <div class="op-status">ENLACE ACTIVO</div>
-                </div>
-            `;
+            div.innerHTML = `<div class="op-avatar">OP</div><div class="op-info"><div class="op-name">${id.substring(0, 6)}</div><div class="op-status">ACTIVO</div></div>`;
             this.peerList.appendChild(div);
         });
     }
@@ -374,58 +262,29 @@ class TacticalComm {
         const canvas = document.getElementById('waves');
         const ctx = canvas.getContext('2d');
         const bufferLength = this.analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-
+        const dataArray = new Uint8ClampedArray(bufferLength);
         const draw = () => {
             requestAnimationFrame(draw);
-            this.analyser.getByteTimeDomainData(dataArray);
-
-            // Resize canvas if needed
-            if (canvas.width !== canvas.clientWidth || canvas.height !== canvas.clientHeight) {
+            this.analyser.getByteFrequencyData(dataArray);
+            if (canvas.width !== canvas.clientWidth) {
                 canvas.width = canvas.clientWidth;
                 canvas.height = canvas.clientHeight;
             }
-
-            ctx.fillStyle = 'rgba(19, 19, 20, 0.2)';
+            ctx.fillStyle = 'rgba(19, 19, 20, 0.5)';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-            ctx.lineWidth = 2;
-
-            // Determine color: Green if someone (me or them) is transmitting
-            let someoneTalking = this.pttBtn.classList.contains('active');
-            if (!someoneTalking) {
-                const activePeers = document.querySelectorAll('.operator-item.active');
-                if (activePeers.length > 0) someoneTalking = true;
-            }
-
-            ctx.strokeStyle = someoneTalking ? '#6EE7B7' : '#3B82F6';
-            ctx.shadowBlur = someoneTalking ? 15 : 0;
-            ctx.shadowColor = ctx.strokeStyle;
-            const sliceWidth = canvas.width * 1.0 / bufferLength;
+            const barWidth = (canvas.width / bufferLength) * 2.5;
+            let barHeight;
             let x = 0;
-
+            let someoneTalking = this.pttBtn.classList.contains('active') || document.querySelectorAll('.operator-item.active').length > 0;
+            ctx.fillStyle = someoneTalking ? '#6EE7B7' : '#3B82F6';
             for (let i = 0; i < bufferLength; i++) {
-                const v = dataArray[i] / 128.0;
-                const y = v * canvas.height / 2;
-
-                if (i === 0) {
-                    ctx.moveTo(x, y);
-                } else {
-                    ctx.lineTo(x, y);
-                }
-
-                x += sliceWidth;
+                barHeight = dataArray[i] / 2;
+                ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+                x += barWidth + 1;
             }
-
-            ctx.lineTo(canvas.width, canvas.height / 2);
-            ctx.stroke();
         };
-
         draw();
     }
 }
 
-// Global initialization
-window.addEventListener('DOMContentLoaded', () => {
-    window.tacNet = new TacticalComm();
-});
+window.addEventListener('DOMContentLoaded', () => { window.tacNet = new TacticalComm(); });
