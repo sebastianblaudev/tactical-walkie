@@ -15,10 +15,13 @@ class TacticalComm {
         this.operatorName = '';
 
         // Configuration
+        // Configuration: High-redundancy ICE servers for 4G/5G traversal
         this.iceServers = [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            // Public free TURN servers from OpenRelayProject
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
             {
                 urls: 'turn:openrelay.metered.ca:443',
                 username: 'openrelayproject',
@@ -255,7 +258,10 @@ class TacticalComm {
     initWebRTC(userId, isOfferer) {
         if (this.peers[userId]) return;
 
-        const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+        const pc = new RTCPeerConnection({
+            iceServers: this.iceServers,
+            iceCandidatePoolSize: 10
+        });
         this.peers[userId] = pc;
 
         // CRITICAL: We add tracks from our PROCESSED stream (affected by PTT gain)
@@ -274,13 +280,14 @@ class TacticalComm {
             this.playRemoteStream(event.streams[0], userId);
         };
 
-        pc.onconnectionstatechange = () => {
-            this.log(`Link state (${userId}): ${pc.connectionState}`, 'sys');
-            if (pc.connectionState === 'failed') {
-                this.peers[userId].close();
-                delete this.peers[userId];
-                // Re-initiate connection if failed
-                this.initWebRTC(userId, true);
+        pc.oniceconnectionstatechange = () => {
+            this.log(`ICE state (${userId}): ${pc.iceConnectionState}`, 'sys');
+            if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                this.log(`Attempting ICE restart for ${userId}...`, 'err');
+                pc.createOffer({ iceRestart: true }).then(offer => {
+                    pc.setLocalDescription(offer);
+                    this.socket.emit('signal', { to: userId, signal: { sdp: pc.localDescription } });
+                });
             }
         };
 
