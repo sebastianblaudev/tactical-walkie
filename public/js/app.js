@@ -1,6 +1,6 @@
 /**
- * TAC-NET Tactical Comm System
- * Engineering logic for WebRTC + Web Audio API
+ * TAC-NET Tactical Comm System v1.1
+ * Focus: High-reliability Mobile-to-Desktop Audio
  */
 
 class TacticalComm {
@@ -10,7 +10,7 @@ class TacticalComm {
         this.audioCtx = null;
         this.mainGain = null;
         this.analyser = null;
-        this.peers = {}; // socketId -> RTCPeerConnection
+        this.peers = {};
         this.missionId = '';
         this.operatorName = '';
 
@@ -18,11 +18,6 @@ class TacticalComm {
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
-            { urls: 'stun:stun.ekiga.net' },
-            { urls: 'stun:stun.ideasip.com' },
-            { urls: 'stun:stun.schlund.de' },
             { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
             { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
         ];
@@ -44,30 +39,21 @@ class TacticalComm {
 
         this.joinBtn.addEventListener('click', () => this.startSession());
 
-        this.pttBtn.addEventListener('mousedown', () => this.setTransmission(true));
-        this.pttBtn.addEventListener('mouseup', () => this.setTransmission(false));
-        this.pttBtn.addEventListener('mouseleave', () => this.setTransmission(false));
+        // PTT Events
+        const startTx = () => this.setTransmission(true);
+        const stopTx = () => this.setTransmission(false);
 
-        this.pttBtn.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            this.setTransmission(true);
-        });
-        this.pttBtn.addEventListener('touchend', (e) => {
-            e.preventDefault();
-            this.setTransmission(false);
-        });
+        this.pttBtn.addEventListener('mousedown', startTx);
+        this.pttBtn.addEventListener('mouseup', stopTx);
+        this.pttBtn.addEventListener('mouseleave', stopTx);
+        this.pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startTx(); });
+        this.pttBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopTx(); });
 
         window.addEventListener('keydown', (e) => {
-            if (e.code === 'Space' && !e.repeat) {
-                if (document.activeElement.tagName !== 'INPUT') {
-                    this.setTransmission(true);
-                }
-            }
+            if (e.code === 'Space' && !e.repeat && document.activeElement.tagName !== 'INPUT') startTx();
         });
         window.addEventListener('keyup', (e) => {
-            if (e.code === 'Space') {
-                this.setTransmission(false);
-            }
+            if (e.code === 'Space') stopTx();
         });
     }
 
@@ -81,9 +67,7 @@ class TacticalComm {
 
     async initAudio() {
         try {
-            this.audioCtx = new (window.AudioContext || window.webkitAudioContext)({
-                latencyHint: 'interactive'
-            });
+            this.audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
 
             this.localStream = await navigator.mediaDevices.getUserMedia({
                 audio: {
@@ -96,9 +80,10 @@ class TacticalComm {
 
             const source = this.audioCtx.createMediaStreamSource(this.localStream);
             this.analyser = this.audioCtx.createAnalyser();
-            this.analyser.fftSize = 128;
+            this.analyser.fftSize = 256;
             source.connect(this.analyser);
 
+            // Gain node for outgoing PTT only
             this.mainGain = this.audioCtx.createGain();
             this.mainGain.gain.value = 0;
             source.connect(this.mainGain);
@@ -106,17 +91,14 @@ class TacticalComm {
             this.processedDestination = this.audioCtx.createMediaStreamDestination();
             this.mainGain.connect(this.processedDestination);
 
-            this.log('Tactical Audio: ONLINE', 'sys');
+            // IMPORTANT: DONT connect source to audioCtx.destination to avoid local echo
+
+            this.log('Tactical Audio initialized (Local Loopback Disabled)', 'sys');
             this.startVisualizer();
 
-            const unlock = async () => {
-                if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
-            };
-            ['click', 'touchstart'].forEach(e => window.addEventListener(e, unlock, { once: true }));
-
+            if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
         } catch (err) {
-            this.log(`Audio Init Error: ${err.message}`, 'err');
-            alert("Micrófono bloqueado o no encontrado.");
+            this.log(`Mic Error: ${err.message}`, 'err');
         }
     }
 
@@ -126,12 +108,10 @@ class TacticalComm {
         if (active) {
             this.mainGain.gain.setTargetAtTime(1.0, now, 0.01);
             this.pttBtn.classList.add('active');
-            this.log('TRANSMITTING...', 'net');
             this.socket.emit('ptt-status', { roomId: this.missionId, active: true });
         } else {
             this.mainGain.gain.setTargetAtTime(0.0, now, 0.01);
             this.pttBtn.classList.remove('active');
-            this.log('IDLE', 'sys');
             this.socket.emit('ptt-status', { roomId: this.missionId, active: false });
         }
     }
@@ -156,7 +136,6 @@ class TacticalComm {
             this.socket.emit('join-room', this.missionId);
         });
 
-        this.socket.on('user-joined', (userId) => this.log(`Peer entered: ${userId}`));
         this.socket.on('room-users', (users) => {
             users.forEach(userId => this.initWebRTC(userId, true));
         });
@@ -174,21 +153,13 @@ class TacticalComm {
                         await peer.pc.setLocalDescription(answer);
                         this.socket.emit('signal', { to: from, signal: { sdp: peer.pc.localDescription } });
                     }
-                    // Process queued candidates
-                    peer.candidates.forEach(async (cand) => {
-                        await peer.pc.addIceCandidate(new RTCIceCandidate(cand)).catch(e => { });
-                    });
+                    peer.candidates.forEach(cand => peer.pc.addIceCandidate(new RTCIceCandidate(cand)).catch(e => { }));
                     peer.candidates = [];
                 } else if (signal.candidate) {
-                    if (peer.pc.remoteDescription) {
-                        await peer.pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
-                    } else {
-                        peer.candidates.push(signal.candidate);
-                    }
+                    if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch(e => { });
+                    else peer.candidates.push(signal.candidate);
                 }
-            } catch (err) {
-                console.error("Signaling Error:", err);
-            }
+            } catch (err) { console.error("Signaling Error:", err); }
         });
 
         this.socket.on('peer-ptt', (data) => {
@@ -208,14 +179,7 @@ class TacticalComm {
 
     initWebRTC(userId, isOfferer) {
         if (this.peers[userId]) return;
-
-        const pc = new RTCPeerConnection({
-            iceServers: this.iceServers,
-            iceCandidatePoolSize: 10,
-            iceTransportPolicy: 'all'
-        });
-
-        // Store both PC and original candidate queue
+        const pc = new RTCPeerConnection({ iceServers: this.iceServers, iceCandidatePoolSize: 10 });
         this.peers[userId] = { pc, candidates: [] };
 
         this.processedDestination.stream.getTracks().forEach(track => {
@@ -227,16 +191,13 @@ class TacticalComm {
         };
 
         pc.ontrack = (e) => {
-            this.log(`Track received from ${userId}`, 'net');
+            this.log(`Direct stream link with ${userId}`, 'net');
             this.playRemoteStream(e.streams[0], userId);
         };
 
         pc.oniceconnectionstatechange = () => {
-            this.log(`ICE ${userId.substring(0, 4)}: ${pc.iceConnectionState}`);
-            if (pc.iceConnectionState === 'failed') {
-                this.log("Restarting connection...");
-                pc.restartIce();
-            }
+            this.log(`Link: ${pc.iceConnectionState}`);
+            if (pc.iceConnectionState === 'failed') pc.restartIce();
         };
 
         if (isOfferer) {
@@ -256,21 +217,33 @@ class TacticalComm {
             audioEl.id = `audio-${userId}`;
             audioEl.autoplay = true;
             audioEl.playsInline = true;
-            audioEl.style.display = 'none';
-            document.body.appendChild(audioEl);
+            audioEl.style.width = '100px';
+            audioEl.style.height = '30px';
+            audioEl.style.marginTop = '5px';
+            audioEl.classList.add('tactical-audio-node');
+
+            // Add to the peer item UI
+            const peerDiv = document.getElementById(`peer-${userId}`);
+            if (peerDiv) peerDiv.appendChild(audioEl);
+            else document.body.appendChild(audioEl);
         }
+
         audioEl.srcObject = stream;
-        const play = async () => {
-            try {
-                if (this.audioCtx.state === 'suspended') await this.audioCtx.resume();
-                await audioEl.play();
-                const remoteSource = this.audioCtx.createMediaStreamSource(stream);
-                remoteSource.connect(this.analyser); // Connect to analyser to see waves
-                remoteSource.connect(this.audioCtx.destination);
-            } catch (e) { this.log("Tap screen to unlock audio", "err"); }
+
+        // Connect to analyser for visual verification ONLY
+        try {
+            const remoteSource = this.audioCtx.createMediaStreamSource(stream);
+            remoteSource.connect(this.analyser);
+        } catch (e) { }
+
+        const attemptPlay = () => {
+            audioEl.play().catch(e => {
+                this.log("Audio waiting for user tap...", "err");
+            });
         };
-        play();
-        ['click', 'touchstart'].forEach(evt => window.addEventListener(evt, play, { once: true }));
+
+        attemptPlay();
+        ['click', 'touchstart'].forEach(e => window.addEventListener(e, attemptPlay, { once: true }));
     }
 
     updatePeerUI() {
@@ -279,7 +252,7 @@ class TacticalComm {
             const div = document.createElement('div');
             div.className = 'operator-item';
             div.id = `peer-${id}`;
-            div.innerHTML = `<div class="op-avatar">OP</div><div class="op-info"><div class="op-name">${id.substring(0, 6)}</div><div class="op-status">ACTIVO</div></div>`;
+            div.innerHTML = `<div class="op-avatar">OP</div><div class="op-info"><div class="op-name">${id.substring(0, 6)}</div><div class="op-status">READY</div></div>`;
             this.peerList.appendChild(div);
         });
     }
@@ -296,13 +269,13 @@ class TacticalComm {
                 canvas.width = canvas.clientWidth;
                 canvas.height = canvas.clientHeight;
             }
-            ctx.fillStyle = 'rgba(19, 19, 20, 0.5)';
+            ctx.fillStyle = 'rgba(19, 19, 20, 0.4)';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
-            const barWidth = (canvas.width / bufferLength) * 2.5;
+            const barWidth = (canvas.width / bufferLength) * 2;
             let barHeight;
             let x = 0;
-            let someoneTalking = this.pttBtn.classList.contains('active') || document.querySelectorAll('.operator-item.active').length > 0;
-            ctx.fillStyle = someoneTalking ? '#6EE7B7' : '#3B82F6';
+            let active = this.pttBtn.classList.contains('active') || document.querySelectorAll('.operator-item.active').length > 0;
+            ctx.fillStyle = active ? '#6EE7B7' : '#3B82F6';
             for (let i = 0; i < bufferLength; i++) {
                 barHeight = dataArray[i] / 2;
                 ctx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
